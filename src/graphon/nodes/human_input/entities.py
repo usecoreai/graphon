@@ -8,7 +8,7 @@ outside `graphon`.
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Any, Self
+from typing import Any, Literal, Self, assert_never
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -73,7 +73,7 @@ class UserAction(BaseModel):
     #
     # The id must be a valid identifier (satisfy the _IDENTIFIER_PATTERN above.)
     id: str = Field(max_length=20)
-    title: str = Field(max_length=20)
+    title: str = Field(max_length=100)
     button_style: ButtonStyle = ButtonStyle.DEFAULT
 
     @field_validator("id")
@@ -124,12 +124,13 @@ class HumanInputNodeData(BaseNodeData):
         return user_actions
 
     def expiration_time(self, start_time: datetime) -> datetime:
-        if self.timeout_unit == TimeoutUnit.HOUR:
-            return start_time + timedelta(hours=self.timeout)
-        if self.timeout_unit == TimeoutUnit.DAY:
-            return start_time + timedelta(days=self.timeout)
-        msg = "unknown timeout unit."
-        raise AssertionError(msg)
+        match self.timeout_unit:
+            case TimeoutUnit.HOUR:
+                return start_time + timedelta(hours=self.timeout)
+            case TimeoutUnit.DAY:
+                return start_time + timedelta(days=self.timeout)
+            case _:
+                assert_never(self.timeout_unit)
 
     def outputs_field_names(self) -> Sequence[str]:
         return [
@@ -179,8 +180,29 @@ class HumanInputNodeData(BaseNodeData):
                 return action.title
         return action_id
 
+    def must_resolve_action_value(self, action_id: str) -> str:
+        """Resolve the selected action's workflow-facing value by id.
+
+        This method should only be called with action ids that have already been
+        validated against the node configuration.
+
+        Returns:
+            The configured workflow-facing value for the selected action id.
+
+        Raises:
+            AssertionError: If the action id is not present in the node config.
+        """
+        for action in self.user_actions:
+            if action.id == action_id:
+                return action.title
+        msg = f"Invalid action: {action_id}"
+        raise AssertionError(msg)
+
 
 class FormDefinition(BaseModel):
+    """Persisted interactive pause form (human or backend-driven)."""
+
+    definition_kind: Literal["human", "backend"] = "human"
     form_content: str
     inputs: list[FormInput] = Field(default_factory=list)
     user_actions: list[UserAction] = Field(default_factory=list)
@@ -195,6 +217,11 @@ class FormDefinition(BaseModel):
 
     # display_in_ui controls whether the form should be displayed in UI surfaces.
     display_in_ui: bool | None = None
+
+    # --- backend-input only (definition_kind == "backend") ---
+    method_name: str = ""
+    invocation_inputs: list[FormInput] = Field(default_factory=list)
+    post_fill_inputs: list[FormInput] = Field(default_factory=list)
 
 
 class HumanInputSubmissionValidationError(ValueError):
@@ -224,3 +251,21 @@ def validate_human_input_submission(
         missing_list = ", ".join(missing_inputs)
         msg = f"Missing required inputs: {missing_list}"
         raise HumanInputSubmissionValidationError(msg)
+
+
+def validate_backend_input_submission(
+    *,
+    invocation_inputs: Sequence[FormInput],
+    post_fill_inputs: Sequence[FormInput],
+    user_actions: Sequence[UserAction],
+    selected_action_id: str,
+    form_data: Mapping[str, Any],
+) -> None:
+    """Validate a backend-input form submission (single logical submit action)."""
+    combined: list[FormInput] = list(invocation_inputs) + list(post_fill_inputs)
+    validate_human_input_submission(
+        inputs=combined,
+        user_actions=user_actions,
+        selected_action_id=selected_action_id,
+        form_data=form_data,
+    )

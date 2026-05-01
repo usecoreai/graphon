@@ -79,3 +79,19 @@ class HumanInputFormTimeoutEvent(NodeEventBase):
 
     node_title: str
     expiration_time: datetime
+
+
+class BackendInputFormFilledEvent(NodeEventBase):
+    """Event emitted when a backend-input form is submitted."""
+
+    node_title: str
+    rendered_content: str
+    action_id: str
+    action_text: str
+
+
+class BackendInputFormTimeoutEvent(NodeEventBase):
+    """Event emitted when a backend-input form times out."""
+
+    node_title: str
+    expiration_time: datetime

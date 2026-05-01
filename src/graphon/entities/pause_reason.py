@@ -9,6 +9,7 @@ from graphon.nodes.human_input.entities import FormInput, UserAction
 
 class PauseReasonType(StrEnum):
     HUMAN_INPUT_REQUIRED = auto()
+    BACKEND_INPUT_REQUIRED = auto()
     SCHEDULED_PAUSE = auto()
 
 
@@ -39,6 +40,19 @@ class HumanInputRequired(BaseModel):
     resolved_default_values: Mapping[str, Any] = Field(default_factory=dict)
 
 
+class BackendInputRequired(BaseModel):
+    TYPE: Literal[PauseReasonType.BACKEND_INPUT_REQUIRED] = (
+        PauseReasonType.BACKEND_INPUT_REQUIRED
+    )
+    form_id: str
+    method_name: str
+    invocation_inputs: list[FormInput] = Field(default_factory=list)
+    post_fill_inputs: list[FormInput] = Field(default_factory=list)
+    node_id: str
+    node_title: str
+    resolved_default_values: Mapping[str, Any] = Field(default_factory=dict)
+
+
 class SchedulingPause(BaseModel):
     TYPE: Literal[PauseReasonType.SCHEDULED_PAUSE] = PauseReasonType.SCHEDULED_PAUSE
 
@@ -46,6 +60,6 @@ class SchedulingPause(BaseModel):
 
 
 type PauseReason = Annotated[
-    HumanInputRequired | SchedulingPause,
+    HumanInputRequired | BackendInputRequired | SchedulingPause,
     Field(discriminator="TYPE"),
 ]

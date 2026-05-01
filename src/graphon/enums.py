@@ -46,6 +46,7 @@ class BuiltinNodeTypes:
     LIST_OPERATOR: ClassVar[NodeType] = "list-operator"
     AGENT: ClassVar[NodeType] = "agent"
     HUMAN_INPUT: ClassVar[NodeType] = "human-input"
+    BACKEND_INPUT: ClassVar[NodeType] = "backend-input"
 
 
 BUILT_IN_NODE_TYPES: tuple[NodeType, ...] = (
@@ -74,6 +75,7 @@ BUILT_IN_NODE_TYPES: tuple[NodeType, ...] = (
     BuiltinNodeTypes.LIST_OPERATOR,
     BuiltinNodeTypes.AGENT,
     BuiltinNodeTypes.HUMAN_INPUT,
+    BuiltinNodeTypes.BACKEND_INPUT,
 )
 
 

@@ -13,6 +13,8 @@ from .loop import (
     LoopSucceededEvent,
 )
 from .node import (
+    BackendInputFormFilledEvent,
+    BackendInputFormTimeoutEvent,
     HumanInputFormFilledEvent,
     HumanInputFormTimeoutEvent,
     ModelInvokeCompletedEvent,
@@ -26,6 +28,8 @@ from .node import (
 
 __all__ = [
     "AgentLogEvent",
+    "BackendInputFormFilledEvent",
+    "BackendInputFormTimeoutEvent",
     "HumanInputFormFilledEvent",
     "HumanInputFormTimeoutEvent",
     "IterationFailedEvent",
