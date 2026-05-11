@@ -20,7 +20,7 @@ from graphon.variables.consts import SELECTORS_LENGTH
 from .enums import ButtonStyle, FormInputType, PlaceholderType, TimeoutUnit
 
 _OUTPUT_VARIABLE_PATTERN = re.compile(
-    r"\{\{#\$output\.(?P<field_name>[a-zA-Z_][a-zA-Z0-9_]{0,29})#\}\}",
+    r"\{\{#\$output\.(?P<field_name>[a-zA-Z_][a-zA-Z0-9_]{0,255})#\}\}",
 )
 
 

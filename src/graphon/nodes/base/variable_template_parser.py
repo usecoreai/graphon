@@ -7,11 +7,11 @@ from graphon.variables.consts import SELECTORS_LENGTH
 from .entities import VariableSelector
 
 REGEX = re.compile(
-    r"\{\{(#[a-zA-Z0-9_]{1,50}(\.[a-zA-Z_][a-zA-Z0-9_]{0,29}){1,10}#)\}\}",
+    r"\{\{(#[a-zA-Z0-9_]{1,256}(\.[a-zA-Z_][a-zA-Z0-9_]{0,255}){1,10}#)\}\}",
 )
 
 SELECTOR_PATTERN = re.compile(
-    r"\{\{(#[a-zA-Z0-9_]{1,50}(?:\.[a-zA-Z_][a-zA-Z0-9_]{0,29}){1,10}#)\}\}",
+    r"\{\{(#[a-zA-Z0-9_]{1,256}(?:\.[a-zA-Z_][a-zA-Z0-9_]{0,255}){1,10}#)\}\}",
 )
 
 
