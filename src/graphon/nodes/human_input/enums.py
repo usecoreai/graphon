@@ -42,10 +42,14 @@ class TimeoutUnit(enum.StrEnum):
 
 
 class FormInputType(enum.StrEnum):
-    """Form input types."""
+    """Form input types (values align with Dify workflow ``InputVarType`` strings)."""
 
-    TEXT_INPUT = enum.auto()
-    PARAGRAPH = enum.auto()
+    TEXT_INPUT = "text-input"
+    PARAGRAPH = "paragraph"
+    NUMBER = "number"
+    CHECKBOX = "checkbox"
+    URL = "url"
+    JSON = "json"
 
 
 class PlaceholderType(enum.StrEnum):
