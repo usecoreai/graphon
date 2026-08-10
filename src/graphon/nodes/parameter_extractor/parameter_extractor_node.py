@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import contextlib
 import json
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, override
+from typing import Any, assert_never, cast, overload, override
 
+from graphon.entities.graph_init_params import GraphInitParams
 from graphon.enums import (
     BuiltinNodeTypes,
     WorkflowNodeExecutionMetadataKey,
@@ -42,6 +45,7 @@ from graphon.nodes.llm.runtime_protocols import (
     PreparedLLMProtocol,
     PromptMessageSerializerProtocol,
 )
+from graphon.runtime.graph_runtime_state import GraphRuntimeState
 from graphon.runtime.variable_pool import VariablePool
 from graphon.variables.factory import build_segment_with_type
 from graphon.variables.types import ArrayValidation, SegmentType
@@ -71,16 +75,8 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from graphon.entities.graph_init_params import GraphInitParams
-    from graphon.runtime.graph_runtime_state import GraphRuntimeState
-
 _JSON_OPEN_TOKENS = frozenset(("{", "["))
 _JSON_CLOSE_TOKENS = frozenset(("}", "]"))
-_EMPTY_STRING_SEGMENT_TYPES = frozenset((
-    SegmentType.STRING,
-    SegmentType.SECRET,
-))
 _EMPTY_STRING_PARAMETER_TYPES = frozenset(("string", "select"))
 _TRANSFORM_RESULT_UNSET = object()
 _VALUE_TRANSFORMER_NAMES: dict[SegmentType, str] = {
@@ -125,6 +121,15 @@ class _ParameterExtractorRunContext:
     process_data: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _ParameterExtractorNodeDependencies:
+    """Runtime collaborators used directly by ParameterExtractorNode."""
+
+    model_instance: PreparedLLMProtocol
+    prompt_message_serializer: PromptMessageSerializerProtocol
+    memory: PromptMessageMemory | None = None
+
+
 class ParameterExtractorNode(Node[ParameterExtractorNodeData]):
     """Parameter Extractor Node."""
 
@@ -134,30 +139,115 @@ class ParameterExtractorNode(Node[ParameterExtractorNodeData]):
     _prompt_message_serializer: PromptMessageSerializerProtocol
     _memory: PromptMessageMemory | None
 
-    @override
+    @overload
     def __init__(
         self,
         node_id: str,
-        config: ParameterExtractorNodeData,
+        data: ParameterExtractorNodeData,
         *,
-        graph_init_params: "GraphInitParams",
-        graph_runtime_state: "GraphRuntimeState",
+        graph_init_params: GraphInitParams,
+        graph_runtime_state: GraphRuntimeState,
+        dependencies: _ParameterExtractorNodeDependencies,
+        credentials_provider: object | None = None,
+        model_factory: object | None = None,
+        model_instance: None = None,
+        memory: None = None,
+        prompt_message_serializer: None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        node_id: str,
+        data: ParameterExtractorNodeData,
+        *,
+        graph_init_params: GraphInitParams,
+        graph_runtime_state: GraphRuntimeState,
+        dependencies: None = None,
         credentials_provider: object | None = None,
         model_factory: object | None = None,
         model_instance: PreparedLLMProtocol,
         memory: PromptMessageMemory | None = None,
         prompt_message_serializer: PromptMessageSerializerProtocol,
+    ) -> None: ...
+
+    @override
+    def __init__(
+        self,
+        node_id: str,
+        data: ParameterExtractorNodeData,
+        *,
+        graph_init_params: GraphInitParams,
+        graph_runtime_state: GraphRuntimeState,
+        dependencies: _ParameterExtractorNodeDependencies | None = None,
+        credentials_provider: object | None = None,
+        model_factory: object | None = None,
+        model_instance: PreparedLLMProtocol | None = None,
+        memory: PromptMessageMemory | None = None,
+        prompt_message_serializer: PromptMessageSerializerProtocol | None = None,
     ) -> None:
         super().__init__(
             node_id=node_id,
-            config=config,
+            data=data,
             graph_init_params=graph_init_params,
             graph_runtime_state=graph_runtime_state,
         )
+        resolved_dependencies = self._resolve_dependencies(
+            dependencies=dependencies,
+            model_instance=model_instance,
+            memory=memory,
+            prompt_message_serializer=prompt_message_serializer,
+        )
         _ = credentials_provider, model_factory
-        self._model_instance = model_instance
-        self._prompt_message_serializer = prompt_message_serializer
-        self._memory = memory
+        self._model_instance = resolved_dependencies.model_instance
+        self._prompt_message_serializer = (
+            resolved_dependencies.prompt_message_serializer
+        )
+        self._memory = resolved_dependencies.memory
+
+    @staticmethod
+    def _resolve_dependencies(
+        *,
+        dependencies: _ParameterExtractorNodeDependencies | None,
+        model_instance: PreparedLLMProtocol | None,
+        memory: PromptMessageMemory | None,
+        prompt_message_serializer: PromptMessageSerializerProtocol | None,
+    ) -> _ParameterExtractorNodeDependencies:
+        if dependencies is not None:
+            if (
+                model_instance is not None
+                or memory is not None
+                or prompt_message_serializer is not None
+            ):
+                msg = (
+                    "Pass either dependencies=... or the legacy "
+                    "model_instance=/memory=/"
+                    "prompt_message_serializer= keywords, not both."
+                )
+                raise TypeError(msg)
+            return dependencies
+
+        missing_dependencies: list[str] = []
+        if model_instance is None:
+            missing_dependencies.append("model_instance")
+        if prompt_message_serializer is None:
+            missing_dependencies.append("prompt_message_serializer")
+        if missing_dependencies:
+            missing = ", ".join(missing_dependencies)
+            msg = (
+                "ParameterExtractorNode requires either dependencies=... or "
+                f"legacy {missing} keyword arguments."
+            )
+            raise TypeError(msg)
+
+        return _ParameterExtractorNodeDependencies(
+            model_instance=cast(PreparedLLMProtocol, model_instance),
+            prompt_message_serializer=cast(
+                PromptMessageSerializerProtocol,
+                prompt_message_serializer,
+            ),
+            memory=memory,
+        )
 
     @classmethod
     @override
@@ -290,6 +380,7 @@ class ParameterExtractorNode(Node[ParameterExtractorNodeData]):
             "files": [f.to_dict() for f in files],
             "parameters": jsonable_encoder(node_data.parameters),
             "instruction": jsonable_encoder(node_data.instruction),
+            **llm_utils.build_model_identity_inputs(model_instance=model_instance),
         }
         process_data = {
             "model_mode": node_data.model.mode,
@@ -796,16 +887,34 @@ class ParameterExtractorNode(Node[ParameterExtractorNodeData]):
 
     @staticmethod
     def _build_default_parameter_value(parameter_type: SegmentType) -> Any:
-        if parameter_type.is_array_type():
-            return build_segment_with_type(segment_type=parameter_type, value=[])
-        if parameter_type in _EMPTY_STRING_SEGMENT_TYPES:
-            return ""
-        if parameter_type == SegmentType.NUMBER:
-            return 0
-        if parameter_type == SegmentType.BOOLEAN:
-            return False
-        msg = "this statement should be unreachable."
-        raise AssertionError(msg)
+        match parameter_type:
+            case (
+                SegmentType.ARRAY_ANY
+                | SegmentType.ARRAY_STRING
+                | SegmentType.ARRAY_NUMBER
+                | SegmentType.ARRAY_OBJECT
+                | SegmentType.ARRAY_FILE
+                | SegmentType.ARRAY_BOOLEAN
+            ):
+                return build_segment_with_type(segment_type=parameter_type, value=[])
+            case SegmentType.STRING | SegmentType.SECRET:
+                return ""
+            case SegmentType.NUMBER:
+                return 0
+            case SegmentType.BOOLEAN:
+                return False
+            case (
+                SegmentType.INTEGER
+                | SegmentType.FLOAT
+                | SegmentType.OBJECT
+                | SegmentType.FILE
+                | SegmentType.NONE
+                | SegmentType.GROUP
+            ):
+                msg = "this statement should be unreachable."
+                raise AssertionError(msg)
+            case _:
+                assert_never(parameter_type)
 
     def _extract_complete_json_response(self, result: str) -> dict | None:
         """Extract complete json response."""

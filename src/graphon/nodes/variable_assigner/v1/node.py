@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from collections.abc import Generator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, cast, override
+from typing import Any, assert_never, override
 
 from graphon.entities.graph_init_params import GraphInitParams
 from graphon.enums import BuiltinNodeTypes, WorkflowNodeExecutionStatus
@@ -14,16 +16,18 @@ from graphon.node_events.node import (
 from graphon.nodes.base.node import Node
 from graphon.nodes.variable_assigner.common import helpers as common_helpers
 from graphon.nodes.variable_assigner.common.exc import VariableOperatorNodeError
+from graphon.runtime.graph_runtime_state import GraphRuntimeState
 from graphon.variables.types import SegmentType
 from graphon.variables.variables import (
-    Variable,
-    VariableBase,
+    ArrayAnyVariable,
+    ArrayBooleanVariable,
+    ArrayFileVariable,
+    ArrayNumberVariable,
+    ArrayObjectVariable,
+    ArrayStringVariable,
 )
 
 from .node_data import VariableAssignerData, WriteMode
-
-if TYPE_CHECKING:
-    from graphon.runtime.graph_runtime_state import GraphRuntimeState
 
 
 class VariableAssignerNode(Node[VariableAssignerData]):
@@ -33,14 +37,14 @@ class VariableAssignerNode(Node[VariableAssignerData]):
     def __init__(
         self,
         node_id: str,
-        config: VariableAssignerData,
+        data: VariableAssignerData,
         *,
-        graph_init_params: "GraphInitParams",
-        graph_runtime_state: "GraphRuntimeState",
+        graph_init_params: GraphInitParams,
+        graph_runtime_state: GraphRuntimeState,
     ) -> None:
         super().__init__(
             node_id=node_id,
-            config=config,
+            data=data,
             graph_init_params=graph_init_params,
             graph_runtime_state=graph_runtime_state,
         )
@@ -87,14 +91,15 @@ class VariableAssignerNode(Node[VariableAssignerData]):
     def _run(self) -> Generator[NodeEventBase, None, None]:
         assigned_variable_selector = self.node_data.assigned_variable_selector
         # Should be String, Number, Object, ArrayString, ArrayNumber, ArrayObject
-        original_variable = self.graph_runtime_state.variable_pool.get(
+        original_variable = self.graph_runtime_state.variable_pool.get_variable(
             assigned_variable_selector,
         )
-        if not isinstance(original_variable, VariableBase):
+        if original_variable is None:
             msg = "assigned variable not found"
             raise VariableOperatorNodeError(msg)
 
-        match self.node_data.write_mode:
+        write_mode = self.node_data.write_mode
+        match write_mode:
             case WriteMode.OVER_WRITE:
                 income_value = self.graph_runtime_state.variable_pool.get(
                     self.node_data.input_variable_selector,
@@ -113,7 +118,19 @@ class VariableAssignerNode(Node[VariableAssignerData]):
                 if not income_value:
                     msg = "input value not found"
                     raise VariableOperatorNodeError(msg)
-                updated_value = [*original_variable.value, income_value.value]
+                match original_variable:
+                    case (
+                        ArrayAnyVariable()
+                        | ArrayBooleanVariable()
+                        | ArrayFileVariable()
+                        | ArrayNumberVariable()
+                        | ArrayObjectVariable()
+                        | ArrayStringVariable()
+                    ):
+                        updated_value = [*original_variable.value, income_value.value]
+                    case _:
+                        msg = "append mode requires an array variable"
+                        raise VariableOperatorNodeError(msg)
                 updated_variable = original_variable.model_copy(
                     update={"value": updated_value},
                 )
@@ -123,6 +140,8 @@ class VariableAssignerNode(Node[VariableAssignerData]):
                 updated_variable = original_variable.model_copy(
                     update={"value": income_value.to_object()},
                 )
+            case _:
+                assert_never(write_mode)
 
         updated_variables = [
             common_helpers.variable_to_processed_data(
@@ -130,7 +149,7 @@ class VariableAssignerNode(Node[VariableAssignerData]):
                 updated_variable,
             ),
         ]
-        yield VariableUpdatedEvent(variable=cast("Variable", updated_variable))
+        yield VariableUpdatedEvent(variable=updated_variable)
         yield StreamCompletedEvent(
             node_run_result=NodeRunResult(
                 status=WorkflowNodeExecutionStatus.SUCCEEDED,

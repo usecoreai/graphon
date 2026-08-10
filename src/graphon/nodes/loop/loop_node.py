@@ -1,9 +1,9 @@
 import contextlib
 import json
 import logging
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, override
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, assert_never, override
 
 from graphon.entities.graph_config import NodeConfigDictAdapter
 from graphon.entities.graph_init_params import GraphInitParams
@@ -36,8 +36,8 @@ from graphon.nodes.base.usage_tracking_mixin import LLMUsageTrackingMixin
 from graphon.nodes.loop.entities import (
     LoopCompletedReason,
     LoopNodeData,
-    LoopVariableData,
 )
+from graphon.utils.condition.entities import Condition
 from graphon.utils.condition.processor import ConditionProcessor
 from graphon.variables.factory import (
     TypeMismatchError,
@@ -52,11 +52,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _DEFAULT_CHILD_ABORT_REASON = "child graph aborted"
-_JSON_ARRAY_LOOP_TYPES = frozenset((
-    SegmentType.ARRAY_NUMBER,
-    SegmentType.ARRAY_OBJECT,
-    SegmentType.ARRAY_STRING,
-))
+
+
+class _IterationState(TypedDict, total=False):
+    iteration_usage: LLMUsage
+    reach_break_node: bool
+    loop_duration: float
+    single_loop_variable: dict[str, object]
 
 
 class LoopNode(LLMUsageTrackingMixin, Node[LoopNodeData]):
@@ -103,7 +105,7 @@ class LoopNode(LLMUsageTrackingMixin, Node[LoopNodeData]):
                 loop_count = 0
 
             for i in range(loop_count):
-                iteration_state: dict[str, object] = {}
+                iteration_state: _IterationState = {}
                 try:
                     yield from self._execute_loop_iteration(
                         current_index=i,
@@ -166,15 +168,15 @@ class LoopNode(LLMUsageTrackingMixin, Node[LoopNodeData]):
     def _record_iteration_state(
         *,
         current_index: int,
-        iteration_state: dict[str, object],
+        iteration_state: _IterationState,
         loop_duration_map: dict[str, float],
         single_loop_variable_map: dict[str, dict[str, object]],
     ) -> bool:
         loop_duration_map[str(current_index)] = float(iteration_state["loop_duration"])
-        single_loop_variable_map[str(current_index)] = dict(
-            iteration_state["single_loop_variable"],
-        )
-        return bool(iteration_state["reach_break_node"])
+        single_loop_variable_map[str(current_index)] = iteration_state[
+            "single_loop_variable"
+        ]
+        return iteration_state["reach_break_node"]
 
     def _initialize_loop_run(
         self,
@@ -201,29 +203,22 @@ class LoopNode(LLMUsageTrackingMixin, Node[LoopNodeData]):
         if not self.node_data.loop_variables:
             return loop_variable_selectors
 
-        value_processor: dict[
-            Literal["constant", "variable"],
-            Callable[[LoopVariableData], Segment | None],
-        ] = {
-            "constant": lambda var: self._get_segment_for_constant(
-                var_type=var.var_type,
-                original_value=var.value,
-            ),
-            "variable": lambda var: (
-                self.graph_runtime_state.variable_pool.get(var.value)
-                if isinstance(var.value, list)
-                else None
-            ),
-        }
         for loop_variable in self.node_data.loop_variables:
-            if loop_variable.value_type not in value_processor:
-                msg = (
-                    f"Invalid value type '{loop_variable.value_type}' "
-                    f"for loop variable {loop_variable.label}"
-                )
-                raise ValueError(msg)
+            match loop_variable.value_type:
+                case "constant":
+                    processed_segment = self._get_segment_for_constant(
+                        var_type=loop_variable.var_type,
+                        original_value=loop_variable.value,
+                    )
+                case "variable":
+                    processed_segment = (
+                        self.graph_runtime_state.variable_pool.get(loop_variable.value)
+                        if isinstance(loop_variable.value, list)
+                        else None
+                    )
+                case _:
+                    assert_never(loop_variable.value_type)
 
-            processed_segment = value_processor[loop_variable.value_type](loop_variable)
             if not processed_segment:
                 msg = f"Invalid value for loop variable {loop_variable.label}"
                 raise ValueError(msg)
@@ -245,7 +240,7 @@ class LoopNode(LLMUsageTrackingMixin, Node[LoopNodeData]):
         self,
         *,
         condition_processor: ConditionProcessor,
-        break_conditions: Sequence[Mapping[str, Any]] | None,
+        break_conditions: Sequence[Condition] | None,
         logical_operator: Literal["and", "or"],
         suppress_errors: bool = False,
     ) -> bool:
@@ -276,7 +271,7 @@ class LoopNode(LLMUsageTrackingMixin, Node[LoopNodeData]):
         root_node_id: str,
         loop_node_ids: set[str],
         loop_variable_selectors: Mapping[str, Sequence[str]],
-        iteration_state: dict[str, object],
+        iteration_state: _IterationState,
     ) -> Generator[
         NodeEventBase | GraphNodeEventBase,
         None,
@@ -610,19 +605,39 @@ class LoopNode(LLMUsageTrackingMixin, Node[LoopNodeData]):
         var_type: SegmentType,
         original_value: Any,
     ) -> Any:
-        if not var_type.is_array_type() or var_type == SegmentType.ARRAY_BOOLEAN:
-            return original_value
-        if var_type in _JSON_ARRAY_LOOP_TYPES:
-            if original_value and isinstance(original_value, str):
-                return json.loads(original_value)
-            logger.warning(
-                "unexpected value for LoopNode, value_type=%s, value=%s",
-                original_value,
-                var_type,
-            )
-            return []
-        msg = "this statement should be unreachable."
-        raise AssertionError(msg)
+        match var_type:
+            case (
+                SegmentType.NUMBER
+                | SegmentType.INTEGER
+                | SegmentType.FLOAT
+                | SegmentType.STRING
+                | SegmentType.OBJECT
+                | SegmentType.SECRET
+                | SegmentType.FILE
+                | SegmentType.BOOLEAN
+                | SegmentType.NONE
+                | SegmentType.GROUP
+                | SegmentType.ARRAY_BOOLEAN
+            ):
+                return original_value
+            case (
+                SegmentType.ARRAY_NUMBER
+                | SegmentType.ARRAY_OBJECT
+                | SegmentType.ARRAY_STRING
+            ):
+                if original_value and isinstance(original_value, str):
+                    return json.loads(original_value)
+                logger.warning(
+                    "unexpected value for LoopNode, value_type=%s, value=%s",
+                    original_value,
+                    var_type,
+                )
+                return []
+            case SegmentType.ARRAY_ANY | SegmentType.ARRAY_FILE:
+                msg = "this statement should be unreachable."
+                raise AssertionError(msg)
+            case _:
+                assert_never(var_type)
 
     def _create_graph_engine(self, root_node_id: str) -> Any:
         # Create GraphInitParams for child graph execution.

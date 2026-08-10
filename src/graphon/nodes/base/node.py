@@ -7,7 +7,7 @@ from collections.abc import Generator, Mapping, Sequence
 from datetime import UTC, datetime
 from functools import singledispatchmethod
 from types import MappingProxyType
-from typing import Any, ClassVar, cast, get_args, get_origin
+from typing import Any, ClassVar, assert_never, get_args, get_origin
 from uuid import uuid4
 
 from graphon.entities.base_node_data import BaseNodeData, RetryConfig
@@ -187,7 +187,7 @@ class _NodeDataModelMixin[NodeDataT: BaseNodeData]:
 
         This convenience wrapper keeps direct node construction ergonomic for
         callers that naturally start from plain dictionaries while preserving the
-        stricter `Node.__init__(..., config=NodeDataT, ...)` contract.
+        stricter `Node.__init__(..., data=NodeDataT, ...)` contract.
 
         Returns:
             The validated node data instance for the concrete node subclass.
@@ -216,14 +216,14 @@ class _NodeDataModelMixin[NodeDataT: BaseNodeData]:
             payload = node_data.model_dump(mode="python")
         else:
             payload = dict(node_data)
-        return cast("NodeDataT", cls._node_data_type.model_validate(payload))
+        return cls._get_node_data_type().model_validate(payload)
 
     def init_node_data(
         self: Node[NodeDataT],
         data: BaseNodeData | Mapping[str, Any],
     ) -> None:
         """Hydrate `_node_data` for legacy callers that bypass `__init__`."""
-        self._node_data = self.validate_node_data(cast("BaseNodeData", data))
+        self._node_data = self.validate_node_data(data)
 
     def init_node_identity(self: Node[NodeDataT], node_id: str) -> None:
         """Hydrate node identity for legacy callers that bypass `__init__`."""
@@ -492,7 +492,9 @@ class Node[NodeDataT: BaseNodeData](
         Node._registry_version += 1
 
     @classmethod
-    def _extract_node_data_type_from_generic(cls) -> type[BaseNodeData] | None:
+    def _extract_node_data_type_from_generic(
+        cls: type[Node[NodeDataT]],
+    ) -> type[NodeDataT] | None:
         """Extract the node data type from the generic parameter `Node[T]`.
 
         Inspects `__orig_bases__` to find the `Node[T]` parameterization and
@@ -537,6 +539,16 @@ class Node[NodeDataT: BaseNodeData](
 
         return None
 
+    @classmethod
+    def _get_node_data_type(cls: type[Node[NodeDataT]]) -> type[NodeDataT]:
+        node_data_type = cls._extract_node_data_type_from_generic()
+        if node_data_type is None:
+            msg = (
+                f"{cls.__name__} must inherit from Node[T] with a BaseNodeData subtype"
+            )
+            raise TypeError(msg)
+        return node_data_type
+
     # Global registry populated via __init_subclass__
     _registry: ClassVar[dict[NodeType, dict[str, type[Node]]]] = {}
     _registry_version: ClassVar[int] = 0
@@ -544,7 +556,7 @@ class Node[NodeDataT: BaseNodeData](
     def __init__(
         self,
         node_id: str,
-        config: NodeDataT,
+        data: NodeDataT,
         *,
         graph_init_params: GraphInitParams,
         graph_runtime_state: GraphRuntimeState,
@@ -566,7 +578,7 @@ class Node[NodeDataT: BaseNodeData](
         self._node_execution_id: str = ""
         self._start_at = datetime.now(UTC).replace(tzinfo=None)
 
-        self._node_data = self.validate_node_data(config)
+        self._node_data = self.validate_node_data(data)
 
         self.post_init()
 
@@ -587,7 +599,9 @@ class Node[NodeDataT: BaseNodeData](
         return str(execution_id)
 
     @abstractmethod
-    def _run(self) -> NodeRunResult | Generator[NodeEventBase, None, None]:
+    def _run(
+        self,
+    ) -> NodeRunResult | Generator[NodeEventBase | GraphNodeEventBase, None, None]:
         """Run the node and return either a result object or an event stream."""
         raise NotImplementedError
 
@@ -739,7 +753,8 @@ class Node[NodeDataT: BaseNodeData](
         result: NodeRunResult,
     ) -> GraphNodeEventBase:
         finished_at = datetime.now(UTC).replace(tzinfo=None)
-        match result.status:
+        status = result.status
+        match status:
             case WorkflowNodeExecutionStatus.FAILED:
                 return NodeRunFailedEvent(
                     id=self.execution_id,
@@ -759,9 +774,18 @@ class Node[NodeDataT: BaseNodeData](
                     finished_at=finished_at,
                     node_run_result=result,
                 )
-            case _:
-                msg = f"result status {result.status} not supported"
+            case (
+                WorkflowNodeExecutionStatus.PENDING
+                | WorkflowNodeExecutionStatus.RUNNING
+                | WorkflowNodeExecutionStatus.EXCEPTION
+                | WorkflowNodeExecutionStatus.STOPPED
+                | WorkflowNodeExecutionStatus.PAUSED
+                | WorkflowNodeExecutionStatus.RETRY
+            ):
+                msg = f"result status {status} not supported"
                 raise ValueError(msg)
+            case _:
+                assert_never(status)
 
     @singledispatchmethod
     def _dispatch(self, event: NodeEventBase) -> GraphNodeEventBase:
@@ -785,7 +809,8 @@ class Node[NodeDataT: BaseNodeData](
         event: StreamCompletedEvent,
     ) -> NodeRunSucceededEvent | NodeRunFailedEvent:
         finished_at = datetime.now(UTC).replace(tzinfo=None)
-        match event.node_run_result.status:
+        status = event.node_run_result.status
+        match status:
             case WorkflowNodeExecutionStatus.SUCCEEDED:
                 return NodeRunSucceededEvent(
                     id=self.execution_id,
@@ -805,12 +830,18 @@ class Node[NodeDataT: BaseNodeData](
                     node_run_result=event.node_run_result,
                     error=event.node_run_result.error,
                 )
-            case _:
-                msg = (
-                    f"Node {self._node_id} does not support status "
-                    f"{event.node_run_result.status}"
-                )
+            case (
+                WorkflowNodeExecutionStatus.PENDING
+                | WorkflowNodeExecutionStatus.RUNNING
+                | WorkflowNodeExecutionStatus.EXCEPTION
+                | WorkflowNodeExecutionStatus.STOPPED
+                | WorkflowNodeExecutionStatus.PAUSED
+                | WorkflowNodeExecutionStatus.RETRY
+            ):
+                msg = f"Node {self._node_id} does not support status {status}"
                 raise NotImplementedError(msg)
+            case _:
+                assert_never(status)
 
     @_dispatch.register
     def _(self, event: VariableUpdatedEvent) -> NodeRunVariableUpdatedEvent:

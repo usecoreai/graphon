@@ -20,10 +20,10 @@ from graphon.model_runtime.errors.invoke import (
     InvokeRateLimitError,
     InvokeServerUnavailableError,
 )
-from graphon.model_runtime.runtime import ModelRuntime
+from graphon.model_runtime.protocols.provider_runtime import ModelProviderRuntime
 
 
-class AIModel:
+class AIModel[RuntimeT: ModelProviderRuntime]:
     """Runtime-facing base class for all model providers.
 
     This stays a regular Python class because instances hold live collaborators
@@ -34,13 +34,13 @@ class AIModel:
 
     model_type: ModelType
     provider_schema: ProviderEntity
-    model_runtime: ModelRuntime
+    model_runtime: RuntimeT
     started_at: float
 
     def __init__(
         self,
         provider_schema: ProviderEntity,
-        model_runtime: ModelRuntime,
+        model_runtime: RuntimeT,
         *,
         started_at: float = 0,
     ) -> None:
@@ -222,7 +222,7 @@ class AIModel:
             return
 
         if not parameter_rule.help:
-            parameter_rule.help = I18nObject(en_us=default_help["en_US"])
+            parameter_rule.help = I18nObject(en_US=default_help["en_US"])
             return
 
         if not parameter_rule.help.en_us:

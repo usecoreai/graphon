@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable, Mapping
-from operator import attrgetter
+from typing import assert_never
 
 from graphon.model_runtime.entities.message_entities import (
     AudioPromptMessageContent,
@@ -40,15 +40,35 @@ def _get_file_transfer_method_value(file: File) -> str:
     return file.transfer_method.value
 
 
-_FILE_ATTRIBUTE_GETTERS: Mapping[FileAttribute, Callable[[File], object]] = {
+def _get_file_size(file: File) -> int:
+    return file.size
+
+
+def _get_file_name(file: File) -> str | None:
+    return file.filename
+
+
+def _get_file_mime_type(file: File) -> str | None:
+    return file.mime_type
+
+
+def _get_file_extension(file: File) -> str | None:
+    return file.extension
+
+
+def _get_file_related_id(file: File) -> str | None:
+    return file.related_id
+
+
+_FILE_ATTRIBUTE_GETTERS: Mapping[FileAttribute, Callable[[File], str | int | None]] = {
     FileAttribute.TYPE: _get_file_type_value,
-    FileAttribute.SIZE: attrgetter("size"),
-    FileAttribute.NAME: attrgetter("filename"),
-    FileAttribute.MIME_TYPE: attrgetter("mime_type"),
+    FileAttribute.SIZE: _get_file_size,
+    FileAttribute.NAME: _get_file_name,
+    FileAttribute.MIME_TYPE: _get_file_mime_type,
     FileAttribute.TRANSFER_METHOD: _get_file_transfer_method_value,
     FileAttribute.URL: _to_url,
-    FileAttribute.EXTENSION: attrgetter("extension"),
-    FileAttribute.RELATED_ID: attrgetter("related_id"),
+    FileAttribute.EXTENSION: _get_file_extension,
+    FileAttribute.RELATED_ID: _get_file_related_id,
 }
 _PROMPT_CONTENT_CLASS_BY_FILE_TYPE: Mapping[
     FileType,
@@ -121,7 +141,8 @@ def _download_file_content(file: File, /) -> bytes:
 
 
 def _get_encoded_string(f: File, /) -> str:
-    match f.transfer_method:
+    transfer_method = f.transfer_method
+    match transfer_method:
         case FileTransferMethod.REMOTE_URL:
             if f.remote_url is None:
                 msg = "Missing file remote_url"
@@ -138,6 +159,8 @@ def _get_encoded_string(f: File, /) -> str:
             data = _download_file_content(f)
         case FileTransferMethod.DATASOURCE_FILE:
             data = _download_file_content(f)
+        case _:
+            assert_never(transfer_method)
 
     return base64.b64encode(data).decode("utf-8")
 

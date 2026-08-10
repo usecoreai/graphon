@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, assert_never
 
 from graphon.file import file_manager
 from graphon.file.enums import FileType
@@ -65,6 +65,17 @@ def fetch_model_schema(*, model_instance: PreparedLLMProtocol) -> AIModelEntity:
         )
         raise ValueError(msg)
     return model_schema
+
+
+def build_model_identity_inputs(
+    *,
+    model_instance: PreparedLLMProtocol,
+) -> dict[str, Any]:
+    """Expose the prepared model identity in node inputs."""
+    return {
+        "model_provider": model_instance.provider,
+        "model_name": model_instance.model_name,
+    }
 
 
 def fetch_files(variable_pool: VariablePool, selector: Sequence[str]) -> Sequence[File]:
@@ -464,9 +475,11 @@ def combine_message_content_with_role(
             return AssistantPromptMessage(content=contents)
         case PromptMessageRole.SYSTEM:
             return SystemPromptMessage(content=contents)
-        case _:
+        case PromptMessageRole.TOOL:
             msg = f"Role {role} is not supported"
             raise NotImplementedError(msg)
+        case _:
+            assert_never(role)
 
 
 def calculate_rest_token(

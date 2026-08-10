@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import json
 import logging
 from collections.abc import Generator, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, override
+from typing import Any, override
 
+from graphon.entities.graph_init_params import GraphInitParams
 from graphon.entities.pause_reason import HumanInputRequired
 from graphon.enums import (
     BuiltinNodeTypes,
@@ -21,16 +24,14 @@ from graphon.nodes.base.node import Node
 from graphon.nodes.runtime import (
     HumanInputFormStateProtocol,
     HumanInputNodeRuntimeProtocol,
+    _HumanInputRuntimeLike,
+    _normalize_human_input_runtime,
 )
+from graphon.runtime.graph_runtime_state import GraphRuntimeState
 from graphon.workflow_type_encoder import WorkflowRuntimeTypeConverter
 
 from .entities import HumanInputNodeData
 from .enums import HumanInputFormStatus, PlaceholderType
-
-if TYPE_CHECKING:
-    from graphon.entities.graph_init_params import GraphInitParams
-    from graphon.runtime.graph_runtime_state import GraphRuntimeState
-
 
 _SELECTED_BRANCH_KEY = "selected_branch"
 
@@ -56,6 +57,7 @@ class HumanInputNode(Node[HumanInputNodeData]):
 
     _node_data: HumanInputNodeData
     _OUTPUT_FIELD_ACTION_ID = "__action_id"
+    _OUTPUT_FIELD_ACTION_VALUE = "__action_value"
     _OUTPUT_FIELD_RENDERED_CONTENT = "__rendered_content"
     _TIMEOUT_HANDLE = _TIMEOUT_ACTION_ID = "__timeout"
 
@@ -63,35 +65,26 @@ class HumanInputNode(Node[HumanInputNodeData]):
     def __init__(
         self,
         node_id: str,
-        config: HumanInputNodeData,
+        data: HumanInputNodeData,
         *,
-        graph_init_params: "GraphInitParams",
-        graph_runtime_state: "GraphRuntimeState",
+        graph_init_params: GraphInitParams,
+        graph_runtime_state: GraphRuntimeState,
         # TODO @-LAN: See https://github.com/langgenius/graphon/issues/new/choose.  # noqa: FIX002
         # Make `runtime` optional once Graphon provides a default human-input
         # runtime adapter instead of requiring an embedding-specific implementation.
-        runtime: HumanInputNodeRuntimeProtocol,
+        runtime: _HumanInputRuntimeLike,
         form_repository: object | None = None,
     ) -> None:
         super().__init__(
             node_id=node_id,
-            config=config,
+            data=data,
             graph_init_params=graph_init_params,
             graph_runtime_state=graph_runtime_state,
         )
-        if form_repository is not None:
-            with_form_repository = getattr(
-                runtime,
-                "with_form_repository",
-                None,
-            )
-            if callable(with_form_repository):
-                updated_runtime = with_form_repository(form_repository)
-                if not isinstance(updated_runtime, HumanInputNodeRuntimeProtocol):
-                    msg = "with_form_repository() must return a HumanInput runtime"
-                    raise TypeError(msg)
-                runtime = updated_runtime
-        self._runtime: HumanInputNodeRuntimeProtocol = runtime
+        self._runtime: HumanInputNodeRuntimeProtocol = _normalize_human_input_runtime(
+            runtime,
+            form_repository=form_repository,
+        )
 
     @classmethod
     @override
@@ -243,7 +236,10 @@ class HumanInputNode(Node[HumanInputNodeData]):
             yield StreamCompletedEvent(
                 node_run_result=NodeRunResult(
                     status=WorkflowNodeExecutionStatus.SUCCEEDED,
-                    outputs={self._OUTPUT_FIELD_ACTION_ID: ""},
+                    outputs={
+                        self._OUTPUT_FIELD_ACTION_ID: "",
+                        self._OUTPUT_FIELD_ACTION_VALUE: "",
+                    },
                     edge_source_handle=self._TIMEOUT_HANDLE,
                 ),
             )
@@ -260,9 +256,12 @@ class HumanInputNode(Node[HumanInputNodeData]):
                 f"form_id={form.id}"
             )
             raise AssertionError(msg)
-        submitted_data = form.submitted_data or {}
-        outputs: dict[str, Any] = dict(submitted_data)
+        submitted_inputs = dict(form.submitted_data or {})
+        outputs: dict[str, Any] = dict(submitted_inputs)
         outputs[self._OUTPUT_FIELD_ACTION_ID] = selected_action_id
+        outputs[self._OUTPUT_FIELD_ACTION_VALUE] = (
+            self._node_data.must_resolve_action_value(selected_action_id)
+        )
         rendered_content = self.render_form_content_with_outputs(
             form.rendered_content,
             outputs,
@@ -282,6 +281,7 @@ class HumanInputNode(Node[HumanInputNodeData]):
         yield StreamCompletedEvent(
             node_run_result=NodeRunResult(
                 status=WorkflowNodeExecutionStatus.SUCCEEDED,
+                inputs=submitted_inputs,
                 outputs=outputs,
                 edge_source_handle=selected_action_id,
             ),

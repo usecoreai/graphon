@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any
 
 from graphon.model_runtime.entities.model_entities import ModelPropertyKey, ModelType
 from graphon.model_runtime.entities.text_embedding_entities import (
@@ -6,9 +6,12 @@ from graphon.model_runtime.entities.text_embedding_entities import (
     EmbeddingResult,
 )
 from graphon.model_runtime.model_providers.base.ai_model import AIModel
+from graphon.model_runtime.protocols.text_embedding_runtime import (
+    TextEmbeddingModelRuntime,
+)
 
 
-class TextEmbeddingModel(AIModel):
+class TextEmbeddingModel(AIModel[TextEmbeddingModelRuntime]):
     """Model class for text embedding model."""
 
     model_type: ModelType = ModelType.TEXT_EMBEDDING
@@ -18,7 +21,7 @@ class TextEmbeddingModel(AIModel):
         model: str,
         credentials: dict,
         texts: list[str] | None = None,
-        multimodel_documents: list[dict] | None = None,
+        multimodel_documents: list[dict[str, Any]] | None = None,
         input_type: EmbeddingInputType = EmbeddingInputType.DOCUMENT,
     ) -> EmbeddingResult:
         """Invoke text or multimodal embedding generation for the provided inputs."""
@@ -26,8 +29,8 @@ class TextEmbeddingModel(AIModel):
             msg = "No texts or files provided"
             raise ValueError(msg)
 
-        try:
-            if texts:
+        if texts:
+            try:
                 return self.model_runtime.invoke_text_embedding(
                     provider=self.provider,
                     model=model,
@@ -35,12 +38,19 @@ class TextEmbeddingModel(AIModel):
                     texts=texts,
                     input_type=input_type,
                 )
+            except Exception as e:
+                raise self._transform_invoke_error(e) from e
 
+        if multimodel_documents is None:
+            msg = "No multimodal documents provided"
+            raise ValueError(msg)
+
+        try:
             return self.model_runtime.invoke_multimodal_embedding(
                 provider=self.provider,
                 model=model,
                 credentials=credentials,
-                documents=cast("list[dict]", multimodel_documents),
+                documents=multimodel_documents,
                 input_type=input_type,
             )
         except Exception as e:
