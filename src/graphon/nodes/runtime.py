@@ -12,6 +12,7 @@ from graphon.nodes.tool_runtime_entities import (
 )
 
 if TYPE_CHECKING:
+    from graphon.nodes.backend_input.entities import BackendInputNodeData
     from graphon.nodes.human_input.entities import HumanInputNodeData
     from graphon.nodes.human_input.enums import HumanInputFormStatus
     from graphon.nodes.tool.entities import ToolNodeData
@@ -71,7 +72,7 @@ class HumanInputNodeRuntimeProtocol(Protocol):
         self,
         *,
         node_id: str,
-        node_data: HumanInputNodeData,
+        node_data: "HumanInputNodeData | BackendInputNodeData",
         rendered_content: str,
         resolved_default_values: Mapping[str, Any],
     ) -> HumanInputFormStateProtocol: ...

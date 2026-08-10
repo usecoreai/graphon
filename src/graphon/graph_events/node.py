@@ -100,6 +100,25 @@ class NodeRunHumanInputFormTimeoutEvent(GraphNodeEventBase):
     expiration_time: datetime = Field(..., description="Form expiration time")
 
 
+class NodeRunBackendInputFormFilledEvent(GraphNodeEventBase):
+    """Emitted when a BackendInput form is submitted and before the node finishes."""
+
+    node_title: str = Field(..., description="BackendInput node title")
+    rendered_content: str = Field(
+        ...,
+        description="Markdown content rendered with field values.",
+    )
+    action_id: str = Field(..., description="Submit action identifier.")
+    action_text: str = Field(..., description="Display text of the submit action.")
+
+
+class NodeRunBackendInputFormTimeoutEvent(GraphNodeEventBase):
+    """Emitted when a BackendInput form times out."""
+
+    node_title: str = Field(..., description="BackendInput node title")
+    expiration_time: datetime = Field(..., description="Form expiration time")
+
+
 class NodeRunPauseRequestedEvent(GraphNodeEventBase):
     reason: PauseReason = Field(..., description="pause reason")
 

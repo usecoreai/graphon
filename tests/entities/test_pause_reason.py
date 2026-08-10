@@ -4,6 +4,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from graphon.entities.pause_reason import (
+    BackendInputRequired,
     HumanInputRequired,
     PauseReason,
     SchedulingPause,
@@ -46,6 +47,24 @@ class TestPauseReasonDiscriminator:
                 SchedulingPause(message="Hold on"),
                 id="SchedulingPause",
             ),
+            pytest.param(
+                {
+                    "reason": {
+                        "TYPE": "backend_input_required",
+                        "form_id": "f1",
+                        "method_name": "doThing",
+                        "node_id": "n1",
+                        "node_title": "Backend",
+                    },
+                },
+                BackendInputRequired(
+                    form_id="f1",
+                    method_name="doThing",
+                    node_id="n1",
+                    node_title="Backend",
+                ),
+                id="BackendInputRequired",
+            ),
         ],
     )
     def test_model_validate(
@@ -64,6 +83,12 @@ class TestPauseReasonDiscriminator:
                 form_content="form_content",
                 node_id="node_id",
                 node_title="node_title",
+            ),
+            BackendInputRequired(
+                form_id="f",
+                method_name="m",
+                node_id="n",
+                node_title="t",
             ),
             SchedulingPause(message="Hold on"),
         ],

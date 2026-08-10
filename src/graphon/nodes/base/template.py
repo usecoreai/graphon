@@ -85,7 +85,7 @@ class Template:
         # We need to split the template by variable placeholders while preserving order
         # Create a regex pattern that matches variable placeholders
         pattern = (
-            r"\{\{(#[a-zA-Z0-9_]{1,50}(?:\.[a-zA-Z_][a-zA-Z0-9_]{0,29}){1,10}#)\}\}"
+            r"\{\{(#[a-zA-Z0-9_]{1,256}(?:\.[a-zA-Z_][a-zA-Z0-9_]{0,255}){1,10}#)\}\}"
         )
 
         # Split template while keeping the delimiters (variable placeholders)

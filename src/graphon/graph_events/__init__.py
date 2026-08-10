@@ -36,6 +36,8 @@ from .loop import (
 
 # Node events
 from .node import (
+    NodeRunBackendInputFormFilledEvent,
+    NodeRunBackendInputFormTimeoutEvent,
     NodeRunExceptionEvent,
     NodeRunFailedEvent,
     NodeRunHumanInputFormFilledEvent,
@@ -63,6 +65,8 @@ __all__ = [
     "NodeRunAgentLogEvent",
     "NodeRunExceptionEvent",
     "NodeRunFailedEvent",
+    "NodeRunBackendInputFormFilledEvent",
+    "NodeRunBackendInputFormTimeoutEvent",
     "NodeRunHumanInputFormFilledEvent",
     "NodeRunHumanInputFormTimeoutEvent",
     "NodeRunIterationFailedEvent",

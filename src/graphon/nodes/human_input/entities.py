@@ -5,10 +5,12 @@ across runtimes. Dify-specific delivery surface and recipient translation stay
 outside `graphon`.
 """
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Any, Self, assert_never
+
+from typing import Any, Literal, Self, assert_never
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -20,7 +22,7 @@ from graphon.variables.consts import SELECTORS_LENGTH
 from .enums import ButtonStyle, FormInputType, PlaceholderType, TimeoutUnit
 
 _OUTPUT_VARIABLE_PATTERN = re.compile(
-    r"\{\{#\$output\.(?P<field_name>[a-zA-Z_][a-zA-Z0-9_]{0,29})#\}\}",
+    r"\{\{#\$output\.(?P<field_name>[a-zA-Z_][a-zA-Z0-9_]{0,255})#\}\}",
 )
 
 
@@ -60,6 +62,14 @@ class FormInput(BaseModel):
     type: FormInputType
     output_variable_name: str
     default: FormInputDefault | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalize_legacy_type(cls, value: Any) -> Any:
+        # Legacy graphs stored StrEnum auto values (e.g. ``text_input``).
+        if value == "text_input":
+            return FormInputType.TEXT_INPUT.value
+        return value
 
 
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -200,6 +210,9 @@ class HumanInputNodeData(BaseNodeData):
 
 
 class FormDefinition(BaseModel):
+    """Persisted interactive pause form (human or backend-driven)."""
+
+    definition_kind: Literal["human", "backend"] = "human"
     form_content: str
     inputs: list[FormInput] = Field(default_factory=list)
     user_actions: list[UserAction] = Field(default_factory=list)
@@ -214,6 +227,11 @@ class FormDefinition(BaseModel):
 
     # display_in_ui controls whether the form should be displayed in UI surfaces.
     display_in_ui: bool | None = None
+
+    # --- backend-input only (definition_kind == "backend") ---
+    method_name: str = ""
+    invocation_inputs: list[FormInput] = Field(default_factory=list)
+    post_fill_inputs: list[FormInput] = Field(default_factory=list)
 
 
 class HumanInputSubmissionValidationError(ValueError):
@@ -243,3 +261,110 @@ def validate_human_input_submission(
         missing_list = ", ".join(missing_inputs)
         msg = f"Missing required inputs: {missing_list}"
         raise HumanInputSubmissionValidationError(msg)
+
+
+def validate_backend_input_submission(
+    *,
+    invocation_inputs: Sequence[FormInput],
+    post_fill_inputs: Sequence[FormInput],
+    user_actions: Sequence[UserAction],
+    selected_action_id: str,
+    form_data: Mapping[str, Any],
+) -> None:
+    """Validate a backend-input form submission (single logical submit action)."""
+    combined: list[FormInput] = list(invocation_inputs) + list(post_fill_inputs)
+    validate_human_input_submission(
+        inputs=combined,
+        user_actions=user_actions,
+        selected_action_id=selected_action_id,
+        form_data=form_data,
+    )
+
+
+def _coerce_single_form_value(input_type: FormInputType, raw: Any) -> Any:
+    if input_type in (FormInputType.TEXT_INPUT, FormInputType.PARAGRAPH, FormInputType.URL):
+        if isinstance(raw, (dict, list)):
+            return json.dumps(raw, ensure_ascii=False)
+        return "" if raw is None else str(raw)
+    if input_type == FormInputType.NUMBER:
+        if isinstance(raw, bool):
+            msg = "boolean is not a valid number"
+            raise ValueError(msg)
+        if isinstance(raw, int | float):
+            return raw
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            msg = "number field cannot be empty"
+            raise ValueError(msg)
+        s = str(raw).strip().replace(",", ".")
+        try:
+            as_float = float(s)
+        except ValueError as exc:
+            msg = f"not a valid number: {raw!r}"
+            raise ValueError(msg) from exc
+        if as_float.is_integer():
+            return int(as_float)
+        return as_float
+    if input_type == FormInputType.CHECKBOX:
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return bool(raw)
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(raw)
+    if input_type == FormInputType.JSON:
+        if isinstance(raw, (dict, list)):
+            return raw
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            msg = "JSON field cannot be empty"
+            raise ValueError(msg)
+        if not isinstance(raw, str):
+            msg = f"expected JSON text or object, got {type(raw).__name__}"
+            raise TypeError(msg)
+        return json.loads(raw)
+    assert_never(input_type)
+
+
+def coerce_form_input_submission_values(
+    *,
+    inputs: Sequence[FormInput],
+    form_data: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Coerce ``form_data`` values to match each field's declared :class:`FormInputType`."""
+    by_name = {fi.output_variable_name: fi for fi in inputs}
+    result: dict[str, Any] = {}
+    for key, raw in form_data.items():
+        spec = by_name.get(key)
+        if spec is None:
+            result[key] = raw
+            continue
+        try:
+            result[key] = _coerce_single_form_value(spec.type, raw)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            msg = f"Invalid value for field '{key}': {exc}"
+            raise HumanInputSubmissionValidationError(msg) from exc
+    return result
+
+
+def coerce_backend_input_submission_values(
+    *,
+    invocation_inputs: Sequence[FormInput],
+    post_fill_inputs: Sequence[FormInput],
+    form_data: Mapping[str, Any],
+) -> dict[str, Any]:
+    combined: list[FormInput] = list(invocation_inputs) + list(post_fill_inputs)
+    return coerce_form_input_submission_values(inputs=combined, form_data=form_data)
+
+
+def coerce_form_definition_submission_values(
+    *,
+    definition: FormDefinition,
+    form_data: Mapping[str, Any],
+) -> dict[str, Any]:
+    if definition.definition_kind == "backend":
+        return coerce_backend_input_submission_values(
+            invocation_inputs=definition.invocation_inputs,
+            post_fill_inputs=definition.post_fill_inputs,
+            form_data=form_data,
+        )
+    return coerce_form_input_submission_values(inputs=definition.inputs, form_data=form_data)
